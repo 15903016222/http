@@ -11,82 +11,41 @@
 #include <sys/stat.h>
 #include <sys/shm.h>
 #include <pthread.h>
+#include <errno.h>
 #include "http.h"
 
-#define BUFFER_SIZE 1024
+//线程数据
+typedef struct __threadData__ {
+    int num;
+    int fd;
+    pthread_t tid;
+} threadData, *pThreadData;
+
+int count = 0;
 
 //处理用户的连接的线程方法
 void *handle(void *arg){
-    int conn = *((int *)arg),i=0,j=0,len=0;
-    char buffer[BUFFER_SIZE];
-    char *buf = NULL;
-    char temp[1024];
-    int fp = -1;
-    int count = 0;
-    int flag = 0;
-    //需要优化
-    while(1){
-        memset(buffer,0,sizeof(buffer));
-        len = recv(conn, buffer, sizeof(buffer),0);
-        if (buf == NULL) {
-            buf = (char *)malloc(BUFFER_SIZE);
-        }else {
-            buf = (char *)realloc(buf, (i + 1)*BUFFER_SIZE);
-        }
-        for (j = 0; j < BUFFER_SIZE; j++) {
-            buf[i*BUFFER_SIZE + j] = buffer[j];
-            if(buffer[j]==13&&buffer[j+1]==10&&buffer[j+2]==13&&buffer[j+3]==10&&j<BUFFER_SIZE-4){
-                flag = 1;
-            }
-        }
-        if(flag)
-            break;
-    }
-    printf("%s\n\n",buf);
-    Request res = parseRequest(buf);
-    free(buf);
-    //处理请求文件  发送数据
-    //发送状态码  (用字符串链接)
-    len = strlen("HTTP/1.1 200 OK\r\nConnection: close\r\nAccept-Ranges: bytes\r\n")+1;
-    buf = (char *)malloc(sizeof(char)*len);
-    strcpy(buf,"HTTP/1.1 200 OK\r\nConnection: close\r\nAccept-Ranges: bytes\r\n");
-    sprintf(temp,"Content-Type: %s\r\n", getFileType(res.file));
-    len += strlen(temp);
-    buf = (char *)realloc(buf,sizeof(char)*len);
-    strcat(buf,temp);
-    printf("filename: %s\n", res.file);
-    printf("Content-Length: %d\n", getFileSize(res.file));
-    sprintf(temp, "Content-Length: %d\r\n\r\n", getFileSize(res.file));
-    len += strlen(temp);
-    buf = (char *)realloc(buf,sizeof(char)*len);
-    strcat(buf,temp);
-    //二进制发送文件
-    fp = open(res.file,O_RDONLY);
-    while (1) {
-        i = read(fp,temp,sizeof(temp));
-        if (i <= 0)
-            break;
-        buf = (char *)realloc(buf,sizeof(char)*(len+i));
-        memcpy(&buf[len], temp, i);
-        len+=i;
-    }
-    close(fp);
-    buf = (char *)realloc(buf,sizeof(char)*(len+4));
-    memcpy(&buf[len], "\r\n", 2);
-    send(conn, buf, (len+2), 0);
-    printf("finish\n");
-    close(conn);//关闭连接
+    pThreadData pData = (pThreadData *)arg;
+
+    printf ("%s[%d], count[%d] \n", __func__, __LINE__, count++);
+
+EXIT:
+    close(pData->fd);
+    free(pData);
+    return NULL;
 }
 
 int main(int argc,char *argv[]){
     struct sockaddr_in client_addr;     //获取客户机信息
     socklen_t length = sizeof(client_addr); //类型大小
     pthread_t *thread = NULL;       //处理事务线程
-    int conn,*temp=NULL,err=0;
+    int conn,err=0;
     int httpServerFd = socket(AF_INET,SOCK_STREAM,0);
     int   opt   =   1;
-    setsockopt(httpServerFd,   SOL_SOCKET,   SO_REUSEADDR, &opt, sizeof(int));
     struct sockaddr_in server_sockaddr;
+    threadData *temp = NULL;
+
+    setsockopt(httpServerFd,   SOL_SOCKET,   SO_REUSEADDR, &opt, sizeof(int));
     server_sockaddr.sin_family = AF_INET;
     server_sockaddr.sin_port = htons(atoi(argv[1]));
     server_sockaddr.sin_addr.s_addr = htonl(INADDR_ANY);
@@ -94,25 +53,35 @@ int main(int argc,char *argv[]){
         printf("绑定失败!\n");
         return 0;
     }
-    ///listen，成功返回0，出错返回-1
+
+    //listen，成功返回0，出错返回-1
     if(listen(httpServerFd,10) == -1){
         printf("监听失败!\n");
         return 0;
     }
 
+    printf ("多线程测试开始...\n");
+
     while(1){
-        ///成功返回非负描述字，出错返回-1
+        //成功返回非负描述字，出错返回-1
         conn = accept(httpServerFd, (struct sockaddr*)&client_addr, &length);
         if(conn==-1){
             printf("客户机连接出错!\n");
             return 0;
         }
-        temp = (int *)malloc(sizeof(int));
-        *temp = conn;
-        thread = (pthread_t *)malloc(sizeof(pthread_t));
-        err = pthread_create(thread,NULL,handle,(void *)temp);
+        temp = (threadData *)malloc(sizeof(threadData));
+        if (NULL == temp) {
+            printf ("malloc 错误. \n");
+            exit(-1);
+        }
+
+        temp->fd = conn;
+
+        err = pthread_create(&temp->tid,NULL,handle,(void *)temp);
         if(err != 0 ){
-            printf("create thread fail\n");
+            printf("create thread fail, err[%d], errno[%d]\n", err, errno);
+            strerror(errno);
+            exit(0);
         }
     }
 
